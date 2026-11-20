@@ -1,0 +1,13 @@
+# Versions the Colab models were trained with (Colab: Python 3.13, numpy 2.4.6).
+# scikit-learn and LightGBM must match exactly for the saved model file to load.
+# numpy only needs to be 2.x (2.4.6 itself needs Python 3.11+).
+flask
+numpy>=2.0
+pandas
+scipy
+pillow
+scikit-image
+mahotas
+joblib
+scikit-learn==1.6.1
+lightgbm==4.6.0

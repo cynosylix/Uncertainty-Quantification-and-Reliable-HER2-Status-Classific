@@ -1,0 +1,10 @@
+flask
+numpy
+pandas
+scipy
+pillow
+scikit-image
+mahotas
+joblib
+scikit-learn
+lightgbm

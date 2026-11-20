@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+.idea/
+catboost_info/
+her2_flask/uploads/*
+!her2_flask/uploads/.keep

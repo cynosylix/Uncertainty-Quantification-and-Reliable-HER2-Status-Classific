@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HER2 SISH Classifier</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="top">
+  <div class="wrap brand">
+    <span class="dot"></span>
+    <div>
+      <h1>HER2 SISH Classifier</h1>
+      <p>SISH-aware feature fusion (paper features + HER2/CEP17 signal analysis) &nbsp;→&nbsp; soft-voting ensemble with conformal prediction</p>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  {% with msgs = get_flashed_messages() %}{% for m in msgs %}<div class="alert">{{ m }}</div>{% endfor %}{% endwith %}
+  {% if error %}<div class="alert">{{ error }}</div>{% endif %}
+  {% if version_warning %}<div class="alert">{{ version_warning }}</div>{% endif %}
+
+  <section class="grid">
+    <div class="card">
+      <h2>Upload a SISH slide image</h2>
+      <form action="{{ url_for('predict_route') }}" method="post" enctype="multipart/form-data" id="form">
+        <label class="drop" id="drop">
+          <input type="file" name="image" id="file" accept=".png,.jpg,.jpeg,.tif,.tiff,.bmp" required>
+          <img id="preview" alt="" hidden>
+          <span id="hint"><strong>Click to choose</strong> or drag an image here<br><small>PNG, JPG, TIFF, BMP · max 50 MB</small></span>
+        </label>
+        <button type="submit" class="btn" id="btn" {% if error %}disabled{% endif %}>Analyse HER2 status</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Result</h2>
+      {% if result %}
+        <div class="eyebrow">{{ original_name }} · {{ result.model }}</div>
+        <div class="label k-{{ result.info.key }}">{{ result.info.name }}</div>
+        <div class="note">{{ result.info.note }}</div>
+        <div class="conf">{{ '%.1f' % result.confidence }}% model probability</div>
+
+        {% if result.confident %}
+          <div class="status ok"><b>Confident prediction</b> — the conformal prediction set contains only this class
+            ({{ ((1 - alpha) * 100) | int }}% target coverage).</div>
+        {% else %}
+          <div class="status warn"><b>Uncertain — confirm with ISH testing.</b>
+            Conformal prediction set: {{ result.pred_set | join(', ') if result.pred_set else 'empty' }}.</div>
+        {% endif %}
+
+        <div class="probs">
+          {% for p in result.probs_named %}
+            <div class="prow"><span>{{ p.name }}</span>
+              <div class="bar"><i class="k-{{ p.key }}" style="width: {{ p.p }}%"></i></div>
+              <span class="num">{{ '%.1f' % p.p }}%</span></div>
+          {% endfor %}
+        </div>
+        <div class="agree">Baseline (paper features only): <b>{{ result.baseline.display }}</b>
+          ({{ '%.1f' % result.baseline.confidence }}%) — {{ 'agrees' if result.agree_baseline else 'disagrees' }}</div>
+      {% else %}
+        <p class="muted">Upload a SISH image. The model combines the base paper's colour/texture features with
+          automatically detected HER2 and CEP17 signals, and flags uncertain cases for ISH confirmation.</p>
+        {% if mm %}
+        <div class="kpis">
+          <div><span class="num">{{ '%.1f' % mm.test_acc }}%</span><small>test accuracy (baseline {{ '%.1f' % bm.test_acc }}%)</small></div>
+          <div><span class="num">{{ '%.1f' % mm.macro_f1 }}</span><small>macro F1 (baseline {{ '%.1f' % bm.macro_f1 }})</small></div>
+          <div><span class="num">{{ '%.0f' % mm.cp_uncertain }}%</span><small>flagged for ISH</small></div>
+        </div>
+        {% endif %}
+      {% endif %}
+    </div>
+  </section>
+
+  {% if signals %}
+  <section class="card">
+    <h2>SISH signal analysis</h2>
+    <div class="sig">
+      <figure>
+        <img src="{{ overlay_url }}" alt="Detected signals" class="overlay">
+        <figcaption><span class="sw g"></span>HER2 signals / clusters &nbsp; <span class="sw y"></span>CEP17 signals</figcaption>
+      </figure>
+      <div>
+        <div class="kpis two">
+          <div><span class="num">{{ signals.her2 }}</span><small>HER2 signals (cluster-aware)</small></div>
+          <div><span class="num">{{ signals.cep17 }}</span><small>CEP17 signals</small></div>
+          <div><span class="num k-{{ signals.ratio_key }}">{{ '%.2f' % signals.ratio }}</span><small>HER2 / CEP17 ratio — {{ signals.ratio_says }}</small></div>
+          <div><span class="num">{{ '%.0f' % signals.clusters }}%</span><small>HER2 signal area in clusters</small></div>
+        </div>
+        <p class="muted small">Clinical SISH scoring calls a case amplified when the HER2/CEP17 ratio is ≥ {{ clinical_ratio }}
+          (ASCO/CAP). This automated ratio is an <b>estimate</b> from colour-based dot detection, used as model input —
+          not a replacement for manual counting.</p>
+      </div>
+    </div>
+  </section>
+  {% endif %}
+
+  {% if explanation %}
+  <section class="card">
+    <h2>Why this prediction — which features support it</h2>
+    <p class="muted small lead">Each bar shows how much the probability of <b class="k-{{ explanation.key }}">{{ explanation.cls }}</b>
+      ({{ explanation.prob }}%) drops when that feature is replaced by values from typical training images.
+      <span class="sup">Green</span> = supports the prediction, <span class="against">red</span> = argues against it.</p>
+
+    <h3>By feature group</h3>
+    {% set g = explanation.groups %}
+    <svg class="xchart" viewBox="0 0 760 {{ g.height }}" role="img" aria-label="Contribution of each feature group">
+      <line x1="{{ g.mid }}" x2="{{ g.mid }}" y1="8" y2="{{ g.height - 6 }}" class="axis"/>
+      {% for r in g.rows %}
+        <text x="{{ g.label_x }}" y="{{ r.y + 15 }}" text-anchor="end" class="lbl">{{ r.name }} ({{ r.n }})</text>
+        <rect x="{{ r.x }}" y="{{ r.y + 4 }}" width="{{ r.w }}" height="16" rx="3" class="{{ 'bpos' if r.pos else 'bneg' }}"/>
+        <text x="{{ r.tx }}" y="{{ r.y + 16 }}" text-anchor="{{ r.anchor }}" class="val">{{ r.label }}</text>
+      {% endfor %}
+    </svg>
+
+    <h3>Top 10 individual features</h3>
+    {% set f = explanation.features %}
+    <svg class="xchart" viewBox="0 0 760 {{ f.height }}" role="img" aria-label="Contribution of the ten most influential features">
+      <line x1="{{ f.mid }}" x2="{{ f.mid }}" y1="8" y2="{{ f.height - 6 }}" class="axis"/>
+      {% for r in f.rows %}
+        <text x="{{ f.label_x }}" y="{{ r.y + 15 }}" text-anchor="end" class="lbl">{{ r.name }}</text>
+        <rect x="{{ r.x }}" y="{{ r.y + 4 }}" width="{{ r.w }}" height="16" rx="3" class="{{ 'bpos' if r.pos else 'bneg' }}"/>
+        <text x="{{ r.tx }}" y="{{ r.y + 16 }}" text-anchor="{{ r.anchor }}" class="val">{{ r.label }}</text>
+      {% endfor %}
+    </svg>
+
+    <div class="tablewrap"><table>
+      <thead><tr><th>Feature</th><th>Group</th><th class="r">This image</th>
+        {% for n in explanation.typical_names %}<th class="r">Typical {{ n }}</th>{% endfor %}
+        <th class="r">Effect</th></tr></thead>
+      <tbody>
+      {% for r in f.rows %}
+        <tr><td>{{ r.name }}</td><td class="muted">{{ r.group }}</td><td class="r num"><b>{{ r.value }}</b></td>
+          {% for k in explanation.typical_keys %}<td class="r num">{{ r.typical[k] }}</td>{% endfor %}
+          <td class="r num {{ 'sup' if r.pos else 'against' }}">{{ r.label }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    <p class="muted small">Model-agnostic explanation of the proposed model ({{ bundle.main }}), averaged over 30 training images.
+      It shows what the model relies on for this image — learned associations, not biological causes. "Typical" = median of training images of that class.</p>
+  </section>
+  {% endif %}
+
+  {% if rows %}
+  <section class="card">
+    <h2>All models on this image</h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Model</th><th>Prediction</th><th class="r">Probability</th>
+        {% for c in class_names %}<th class="r">P({{ c }})</th>{% endfor %}</tr></thead>
+      <tbody>
+      {% for r in rows %}
+        <tr class="{{ 'main' if r.is_main }}">
+          <td>{{ r.model }}{% if r.is_main %} <span class="tag">proposed</span>{% elif r.is_baseline %} <span class="tag base">baseline</span>{% endif %}</td>
+          <td><span class="pill k-{{ r.key }}">{{ r.display }}</span></td>
+          <td class="r num">{{ '%.2f' % r.confidence }}%</td>
+          {% for p in r.probs %}<td class="r num">{{ '%.2f' % p }}%</td>{% endfor %}
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+  </section>
+  {% endif %}
+
+  {% if bundle %}
+  <section class="card">
+    <h2>Baseline vs proposed — held-out test set ({{ bundle.n_test }} images)</h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Model</th><th class="r">Feat.</th><th class="r">Accuracy</th><th class="r">95% CI</th>
+        <th class="r">Precision</th><th class="r">Recall</th><th class="r">F1</th><th class="r">Amp/Non F1</th>
+        <th class="r">AUC</th><th class="r">CV acc.</th><th class="r">Flagged</th><th class="r">Acc. confident</th></tr></thead>
+      <tbody>
+      {% for m in bundle.metrics %}
+        <tr class="{{ 'main' if m.main }}">
+          <td>{{ m.model }}</td>
+          <td class="r num">{{ m.n_features }}</td>
+          <td class="r num">{{ '%.2f' % m.test_acc }}%</td>
+          <td class="r num">{{ m.ci[0] }}–{{ m.ci[1] }}</td>
+          <td class="r num">{{ '%.1f' % m.precision }}</td>
+          <td class="r num">{{ '%.1f' % m.recall }}</td>
+          <td class="r num">{{ '%.1f' % m.macro_f1 }}</td>
+          <td class="r num">{{ '%.1f' % m.amp_f1 if m.amp_f1 is not none else '–' }}</td>
+          <td class="r num">{{ '%.3f' % m.auc }}</td>
+          <td class="r num">{{ '%.2f' % m.cv_acc }}%</td>
+          <td class="r num">{{ '%.1f' % m.cp_uncertain }}%</td>
+          <td class="r num">{{ '%.1f' % m.cp_confident_acc if m.cp_confident_acc is not none else '–' }}%</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    <p class="muted small">Proposed feature groups: {{ bundle.proposed_groups | join(' + ') }}. Conformal prediction at α = {{ alpha }}.
+      Trained {{ bundle.trained_at }} on {{ bundle.n_train }} images. Macro-averaged precision / recall / F1.</p>
+  </section>
+  {% endif %}
+
+  <p class="foot">Research prototype — not for clinical diagnosis. HER2 status must be confirmed by a pathologist and ISH testing.</p>
+</main>
+
+<script>
+  const file = document.getElementById('file'), preview = document.getElementById('preview'),
+        hint = document.getElementById('hint'), drop = document.getElementById('drop'),
+        form = document.getElementById('form'), btn = document.getElementById('btn');
+  function show(f) {
+    if (!f) return;
+    if (/\.(tif|tiff)$/i.test(f.name)) { hint.innerHTML = '<strong>' + f.name + '</strong><br><small>TIFF selected</small>'; preview.hidden = true; hint.hidden = false; return; }
+    preview.src = URL.createObjectURL(f); preview.hidden = false; hint.hidden = true;
+  }
+  file.addEventListener('change', () => show(file.files[0]));
+  ['dragover', 'dragenter'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach(e => drop.addEventListener(e, () => drop.classList.remove('over')));
+  drop.addEventListener('drop', ev => { ev.preventDefault(); file.files = ev.dataTransfer.files; show(file.files[0]); });
+  form.addEventListener('submit', () => { btn.disabled = true; btn.textContent = 'Analysing… (signal detection runs at full resolution)'; });
+</script>
+</body>
+</html>
